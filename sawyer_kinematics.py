@@ -130,26 +130,28 @@ class Sawyer:
     
     
     # Function that return the IK solution given a position and orientation
-    def Inverse_Kinematics(self, limb, coordinates, orientation):
+    def Inverse_Kinematics(self, limb, coordinates, orientation, prev_solution = None):
         angles=limb.joint_angles()
         ns = "ExternalTools/right/PositionKinematicsNode/IKService"
         iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
         ikreq = SolvePositionIKRequest()
         hdr = Header(stamp=rospy.Time.now(), frame_id='base')
+        quaternion = tf.transformations.quaternion_from_euler(*np.deg2rad(orientation))
+        
         poses = {
                 'right': PoseStamped(
                     header=hdr,
     		pose=Pose(
     		position=Point(
-    		x=coordinates.x,
-    		y=coordinates.y,
-    		z=coordinates.z,
+    		x=coordinates[0],
+    		y=coordinates[1],
+    		z=coordinates[2],
     		),
     		orientation=Quaternion(
-    		x=orientation.x,
-    		y=orientation.y,
-    		z=orientation.z,
-    		w=orientation.w,),
+    		x=quaternion[0],
+    		y=quaternion[1],
+    		z=quaternion[2],
+    		w=quaternion[3],),
     		),),}
     
         ikreq.pose_stamp.append(poses['right'])
@@ -158,16 +160,17 @@ class Sawyer:
         
         seed = JointState()
         seed.name = ['right_j0', 'right_j1', 'right_j2', 'right_j3', 'right_j4', 'right_j5', 'right_j6']
-        seed.position = [angles[a] for a in seed.name]
+        seed.position = prev_solution if prev_solution is not None else [angles[a] for a in seed.name]
+
         ikreq.seed_angles.append(seed)
         
         # Optimize the null space in terms of joint configuration
-        ikreq.use_nullspace_goal.append(True)
-        goal = JointState()
-        goal.name = ['right_j2']
-        goal.position = [0]
-        ikreq.nullspace_goal.append(goal)
-        ikreq.nullspace_gain.append(0.4)
+        #ikreq.use_nullspace_goal.append(True)
+        #goal = JointState()
+        #goal.name = ['right_j2']
+        #goal.position = [0]
+        #ikreq.nullspace_goal.append(goal)
+        #ikreq.nullspace_gain.append(0.4)
         
         try:
         	rospy.wait_for_service(ns, 5.0)
@@ -183,6 +186,8 @@ class Sawyer:
         		    ikreq.SEED_NS_MAP: 'Nullspace Setpoints',
         		    }.get(resp.result_type[0], 'None')
         	limb_joints = dict(zip(resp.joints[0].name, resp.joints[0].position))
-        
-    return limb_joints
+        else:
+            print('Failed to find solution!')
+
+        return limb_joints
 
