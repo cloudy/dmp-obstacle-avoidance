@@ -110,7 +110,7 @@ class Sawyer:
     def JointOffset(self, angles):
 
         angles[1] = angles[1] + math.radians(90)
-        angles[6] = angles[6] + math.radians(170) + math.radians(90)
+        angles[6] = angles[6] + math.radians(170)# + math.radians(90)
 
         return angles
 
