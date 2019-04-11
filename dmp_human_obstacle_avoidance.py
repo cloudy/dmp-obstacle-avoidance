@@ -22,10 +22,10 @@ DISTORTION = np.array([0.047441, -0.104070, 0.006161, 0.000338, 0.000000])
 
 CARTIM = [[835, 417], [322, 608]] #[[178, 448], [173, 355]]  # [[XX],[YY]] of the calibration points on table
 CARTBOT = [[0.3,-0.3], [-0.4,-0.8]] # [[XX],[YY]] for the cartesian EE table values
-ZLOW = -0.16187#-0.065 # Pick up height
+ZLOW = -.05#-0.16187#-0.065 # Pick up height
 ZHIGH = 0.66845#0.26 # Drop off height (to reach over lip of box)
-ZHPIXELS = 315.0*376.0*2.2
-ZLPIXELS = 115.0*160.0*1.2
+ZHPIXELS = 315.0*376.0#*1.7
+ZLPIXELS = 115.0*160.0#*1.2
 CAMWIDTH, CAMHEIGHT = 1280, 720
 
 BLUELOWER = np.array([110, 100, 100])
@@ -43,7 +43,9 @@ FONTCOLOR = (255, 255, 255)
 def main(arg):
     rospy.init_node("Sawyer_DMP")
     limb = intera_interface.Limb('right')
-    
+    lights = intera_interface.Lights() 
+    lights.set_light_state('right_hand_red_light')
+
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMWIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMHEIGHT)
@@ -52,7 +54,7 @@ def main(arg):
     
     detection_graph, sess = detector_utils.load_inference_graph()
     
-    position_dmp = DMP(arg.gain, arg.num_gaussians, arg.stabilization, arg.obstacle_avoidance)
+    position_dmp = DMP(arg.gain, arg.num_gaussians, arg.stabilization, arg.obstacle_avoidance, arg.obstacle_gain)
     orientation_dmp = DMP(arg.gain, arg.num_gaussians, arg.stabilization, False) # no obstacle avoidance on orientation
 
     data = load_demo(arg.input_file)
@@ -101,22 +103,28 @@ def main(arg):
     ftarget_position, w_position = position_dmp.imitate(position, dposition, ddposition, t, s, psv)
     ftarget_orientation, w_orientation = orientation_dmp.imitate(orientation, dorientation, ddorientation, t, s, psv)
     
+    lights.set_light_state('right_hand_green_light')
+    lights.set_light_state('right_hand_red_light', False)
+
     obstacles, image_o = detect_hand(cap, detection_graph, sess, cap.get(3), cap.get(4))
     target, image_t = detect_block(cap)
 
     if arg.show_camera:
-        cv2.namedWindow('cam', cv2.WINDOW_NORMAL)
-        for _ in range(200):
+        for i in range(20):
             obstacles, image_o = detect_hand(cap, detection_graph, sess, cap.get(3), cap.get(4))
             target, image_t = detect_block(cap)
             cv2.imshow('hand', cv2.cvtColor(image_o,cv2.COLOR_RGB2BGR))
             cv2.imshow('blocks', image_t)
+            cv2.imwrite(arg.output_file + '-obstacle-' +str(i) + '.png',cv2.cvtColor(image_o, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(arg.output_file + '-block-' +str(i) + '.png',image_t)
             if cv2.waitKey(25) & 0xFF == ord('q'):
-                cv2.destroyAllWindows()
                 break
+        cv2.destroyAllWindows()
     
-    goal_pose = f_position[-1]
-    goal_pose = [target[0][0], target[0][1], 0.0]
+    lights.set_light_state('right_hand_red_light')
+    lights.set_light_state('right_hand_green_light', False)
+
+    goal_pose = f_position[-1] if arg.original_point else [target[0][0], target[0][1], f_position[-1][2]] 
     obstacles = np.array([[0,0,0,0,0,0]]) if len(obstacles) is 0 else obstacles
     
     print('DMP: Generating trajectory...')
@@ -157,7 +165,7 @@ def main(arg):
         #plot.comparison(t, q, xc, None, labels=['Original q', 'cartesian-DMP', 'None'])
         #plot.position(t, xo, position[:,3:], title='Orientation')
         plot.cartesian_history([gen_sol, real_sol, obstacles], [0.2,0.2,100.0], directory=arg.output_file)
-        plot.show_all()
+        #plot.show_all()
 
     print('Saving joint angle solutions to: %s' % (arg.output_file + '_trajectory.txt'))
     traj_final = np.concatenate((xc, np.multiply(np.ones((xc.shape[0], 1)), 0.0402075604203)), axis=1)
@@ -165,7 +173,7 @@ def main(arg):
     traj_final = np.concatenate((t.reshape((-1, 1)), traj_final), axis=1)
     header = 'time,right_j0,right_j1,right_j2,right_j3,right_j4,right_j5,right_j6,right_gripper'
     np.savetxt(arg.output_file + '_trajectory.txt', traj_final, delimiter=',', header=header, comments='', fmt="%1.12f")
-
+    lights.set_light_state('right_hand_red_light', False)
 
 # Filters blocks out of image and returns a list of x-y pairs in relation to the end-effector
 def detect_hand(cap, detection_graph, sess, imw, imh, num_hands=1, thresh=0.15):
@@ -238,7 +246,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Use Reinforced DMP to adapt to new goals")
     parser.add_argument('-ga', '--gain', type=float, default=20.0,
                         help="Set the gain of the DMP transformation system.")
-    parser.add_argument('-ng', '--num-gaussians', type=int, default=500,
+    parser.add_argument('-og', '--obstacle-gain', type=float, default=500,
+                        help="Set the obstacle gain term")
+    parser.add_argument('-ng', '--num-gaussians', type=int, default=100,
                         help="Number of Gaussians")
     parser.add_argument('-sb', '--stabilization', type=bool, default=False,
                         help="Add a stability term at end of trajectory")
@@ -246,6 +256,10 @@ if __name__ == '__main__':
                         help="Input trajectory file")
     parser.add_argument('-of', '--output-file', type=str, default='output',
                         help="Output plot file")
+    parser.add_argument('-op', '--orig-point', dest='original_point', action='store_true',
+                        help="Use end of trajectory point")
+    parser.add_argument('-mp', '--mod-point', dest='original_point', action='store_false',
+                        help="Use point from camera tracking")
     parser.add_argument('-p', '--show-plots', dest='show_plots', action='store_true',
                         help="Show plots at end of computation")
     parser.add_argument('-np', '--no-plots', dest='show_plots', action='store_false',
@@ -267,7 +281,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--goal', nargs='+', type=float, 
                         default=[-2.7, 3.4, 0.6, -0.3, 1.8, -2.7, -1.35],
                         help="New position goal (joint space)")
-    parser.set_defaults(show_plots=True, obstacle_avoidance=False, show_camera=False)
+    parser.set_defaults(show_plots=True, obstacle_avoidance=False, show_camera=False, original_point=False)
     arg = parser.parse_args()
 
     main(arg)
